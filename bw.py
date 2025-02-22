@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 import time, os, sys
 
-# Configurable variables in the script
-INTERFACE = "eth0"
+INTERFACES = ["eth0"] # ["eth0", "eth1"] to add more nic´s
 FILE_DN = "/mnt/glftpd/ftp-data/misc/gl_bw_dn.stat"
 FILE_UP = "/mnt/glftpd/ftp-data/misc/gl_bw_up.stat"
 FILE_TO = "/mnt/glftpd/ftp-data/misc/gl_bw_to.stat"
 LOG_FILE = "/mnt/glftpd/ftp-data/logs/glftpd.log"
 
-# DEBUG controlled via startup parameter --debug
-DEBUG = False
-if "--debug" in sys.argv:
-    DEBUG = True
+DEBUG = "--debug" in sys.argv
+if DEBUG and "--debug" in sys.argv:
     sys.argv.remove("--debug")
 
 def debug_print(msg):
@@ -54,6 +51,17 @@ def get_old_timestamp(fp):
         debug_print(f"get_old_timestamp: Error for {fp}: {e}")
         return "N/A"
 
+def read_bytes(stat_type):
+    total = 0
+    for iface in INTERFACES:
+        path = f"/sys/class/net/{iface}/statistics/{stat_type}"
+        try:
+            with open(path, "r") as f:
+                total += int(f.read().strip())
+        except Exception as e:
+            debug_print(f"read_bytes: Error reading {path}: {e}")
+    return total
+
 def get_bw():
     tol_low = 1.99
     tol_high = 2.01
@@ -61,29 +69,21 @@ def get_bw():
     for attempt in range(1, max_attempts+1):
         debug_print(f"get_bw: Attempt {attempt}")
         try:
-            with open(f"/sys/class/net/{INTERFACE}/statistics/rx_bytes", "r") as f:
-                br1 = int(f.read().strip())
-            with open(f"/sys/class/net/{INTERFACE}/statistics/tx_bytes", "r") as f:
-                bt1 = int(f.read().strip())
+            br1 = read_bytes("rx_bytes")
+            bt1 = read_bytes("tx_bytes")
             debug_print(f"get_bw: br1={br1}, bt1={bt1}")
         except Exception as e:
             debug_print(f"get_bw: Error reading initial values: {e}")
             return None, None
         t1 = time.time()
         time.sleep(2)
-        while True:
-            t2 = time.time()
-            delta = t2 - t1
-            if delta >= 2:
-                break
-            time.sleep(0.01)
+        t2 = time.time()
+        delta = t2 - t1
         debug_print(f"get_bw: Measured duration = {delta:.4f} seconds")
         if tol_low <= delta <= tol_high:
             try:
-                with open(f"/sys/class/net/{INTERFACE}/statistics/rx_bytes", "r") as f:
-                    br2 = int(f.read().strip())
-                with open(f"/sys/class/net/{INTERFACE}/statistics/tx_bytes", "r") as f:
-                    bt2 = int(f.read().strip())
+                br2 = read_bytes("rx_bytes")
+                bt2 = read_bytes("tx_bytes")
                 debug_print(f"get_bw: br2={br2}, bt2={bt2}")
             except Exception as e:
                 debug_print(f"get_bw: Error reading second values: {e}")
@@ -93,7 +93,7 @@ def get_bw():
             debug_print(f"get_bw: in_kb={in_kb:.4f}, out_kb={out_kb:.4f}")
             return int(in_kb), int(out_kb)
         else:
-            debug_print(f"get_bw: Time delta outside tolerance range: {delta:.4f} seconds")
+            debug_print(f"get_bw: Time delta out of tolerance: {delta:.4f} seconds")
     debug_print("get_bw: No exact 2-second measurement achieved, measurement discarded")
     return None, None
 
@@ -103,11 +103,10 @@ while True:
     bw_dn = read_stat(FILE_DN)
     bw_up = read_stat(FILE_UP)
     bw_to = read_stat(FILE_TO)
-    cu = get_bw()
-    if cu == (None, None):
+    cu_dn, cu_up = get_bw()
+    if (cu_dn, cu_up) == (None, None):
         debug_print("Loop: Invalid measurement, skipping update")
         continue
-    cu_up, cu_dn = cu
     if cu_up > bw_up:
         old_ts = get_old_timestamp(FILE_UP) if os.path.exists(FILE_UP) else "N/A"
         write_stat(FILE_UP, cu_up)
